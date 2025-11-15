@@ -1,0 +1,7 @@
+services:
+  myhomepage:
+    build: .
+    container_name: myhomepage
+    ports:
+      - "555:555"
+    restart: unless-stopped
