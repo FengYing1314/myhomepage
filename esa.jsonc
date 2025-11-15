@@ -1,0 +1,10 @@
+{
+  // 静态资源目录
+  "assets": "dist",
+  // 构建命令
+  "build": {
+    "command": "npm run build"
+  },
+  // Node.js 版本
+  "runtime": "nodejs22"
+}
