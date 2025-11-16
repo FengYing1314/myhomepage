@@ -1,5 +1,5 @@
 ﻿<script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, ref } from 'vue'
 
 interface LinkItem {
   id: string
@@ -22,13 +22,6 @@ interface ActivityItem {
 interface HeatmapCell {
   date: string
   count: number
-}
-
-interface PointerTrailPoint {
-  id: number
-  x: number
-  y: number
-  createdAt: number
 }
 
 interface MusicTrack {
@@ -115,14 +108,15 @@ const defaultTrack: MusicTrack = {
   length: '00:00'
 }
 
-const weekdayLabels = ['日', '一', '二', '三', '四', '五', '六']
-
 const GITHUB_EVENTS_ENDPOINT =
   'https://api.github.com/users/FengYing1314/events/public?per_page=100'
 const BLOG_FEED_ENDPOINT = 'https://blog.fengying.xin/feed'
 const BLOG_FEED_FALLBACK = '/feed.rss'
-const TOTAL_WEEKS = 52
-const ONE_YEAR_MS = 365 * 24 * 60 * 60 * 1000
+const TOTAL_WEEKS = 5
+const SUB_CELLS_PER_DAY = 4
+const HEATMAP_ROWS = 7
+const HEATMAP_COLUMNS = TOTAL_WEEKS * SUB_CELLS_PER_DAY
+const ACTIVITY_RANGE_MS = 30 * 24 * 60 * 60 * 1000
 
 function buildOgImage(url: string): string {
   const encoded = encodeURIComponent(url)
@@ -130,7 +124,7 @@ function buildOgImage(url: string): string {
 }
 
 // 指路标数据（GitHub/B站/Steam 等入口），用于渲染 OG 缩略图卡片。
-const links = ref<LinkItem[]>([
+const links: LinkItem[] = [
   {
     id: 'github',
     label: 'GitHub',
@@ -179,7 +173,7 @@ const links = ref<LinkItem[]>([
     badge: 'API',
     ogImage: buildOgImage('https://api.fengying.xin/')
   }
-])
+]
 
 const githubActivities = ref<ActivityItem[]>([])
 const blogActivities = ref<ActivityItem[]>([])
@@ -187,16 +181,11 @@ const githubLoading = ref(false)
 const blogLoading = ref(false)
 const githubError = ref<string | null>(null)
 const blogError = ref<string | null>(null)
-const pointerTrail = ref<PointerTrailPoint[]>([])
 const audioRef = ref<HTMLAudioElement | null>(null)
 const currentTrackIndex = ref(0)
 const trackProgress = ref(0)
 const trackDuration = ref(0)
 const isPlaying = ref(false)
-
-const MAX_TRAIL_POINTS = 14
-const TRAIL_LIFETIME_MS = 700
-let trailCleanupTimer: number | undefined
 
 const currentTrack = computed<MusicTrack>(() => {
   if (!featuredTracks.length) return defaultTrack
@@ -298,55 +287,22 @@ function handleTrackEnded() {
   playNextTrack()
 }
 
-function prunePointerTrail(now = performance.now()) {
-  pointerTrail.value = pointerTrail.value.filter(
-    (point) => now - point.createdAt < TRAIL_LIFETIME_MS
-  )
-}
-
-function handlePointerMove(event: PointerEvent) {
-  if (event.pointerType && event.pointerType !== 'mouse') return
-  const now = performance.now()
-  prunePointerTrail(now)
-  pointerTrail.value = [
-    ...pointerTrail.value,
-    { id: now, x: event.clientX, y: event.clientY, createdAt: now }
-  ].slice(-MAX_TRAIL_POINTS)
-}
-
-function startPointerTrail() {
-  window.addEventListener('pointermove', handlePointerMove, { passive: true })
-  trailCleanupTimer = window.setInterval(() => prunePointerTrail(), 80)
-}
-
-function stopPointerTrail() {
-  window.removeEventListener('pointermove', handlePointerMove)
-  if (trailCleanupTimer !== undefined) {
-    window.clearInterval(trailCleanupTimer)
-    trailCleanupTimer = undefined
-  }
-  pointerTrail.value = []
-}
-
-function pointerTrailOpacity(index: number): number {
-  const total = pointerTrail.value.length || 1
-  return (index + 1) / total
-}
-
-function pointerTrailScale(index: number): number {
-  const total = pointerTrail.value.length
-  if (total <= 1) return 1
-  const progress = index / (total - 1)
-  return 0.7 + progress * 0.4
-}
-
-const activityCounterText = computed(() => {
-  return `${githubActivities.value.length} GitHub 动态 · ${blogActivities.value.length} Blog 条目`
+const activityCounter = computed(() => {
+  const cutoff = Date.now() - ACTIVITY_RANGE_MS
+  const githubCount = githubActivities.value.filter((item) => {
+    const time = new Date(item.timestamp).getTime()
+    return item.source === 'github' && !Number.isNaN(time) && time >= cutoff
+  }).length
+  const blogCount = blogActivities.value.filter((item) => {
+    const time = new Date(item.timestamp).getTime()
+    return item.source === 'blog' && !Number.isNaN(time) && time >= cutoff
+  }).length
+  return `${githubCount} GitHub动态 · ${blogCount} Blog条目`
 })
 
 // 将 GitHub + Blog 活动合并，筛选一年内的数据并按时间倒序。
 const activityItems = computed<ActivityItem[]>(() => {
-  const cutoff = Date.now() - ONE_YEAR_MS
+  const cutoff = Date.now() - ACTIVITY_RANGE_MS
   return [...githubActivities.value, ...blogActivities.value]
     .filter((item) => {
       const time = new Date(item.timestamp).getTime()
@@ -373,14 +329,22 @@ const heatmapCells = computed<HeatmapCell[]>(() => {
     const d = new Date(today)
     d.setDate(today.getDate() - i)
     const key = formatDate(d)
-    cells.push({ date: key, count: counts.get(key) ?? 0 })
+    const count = counts.get(key) ?? 0
+    for (let j = 0; j < SUB_CELLS_PER_DAY; j += 1) {
+      cells.push({ date: key, count })
+    }
   }
-  return cells
+  return shuffleHeatmapCells(cells)
 })
 
 const maxHeatmapCount = computed(() =>
   heatmapCells.value.reduce((max, cell) => (cell.count > max ? cell.count : max), 0)
 )
+
+const heatmapGridStyle = computed(() => ({
+  '--heatmap-columns': `${HEATMAP_COLUMNS}`,
+  '--heatmap-rows': `${HEATMAP_ROWS}`,
+}))
 
 function describeHeatmapCell(cell: HeatmapCell): string {
   const label = cell.count === 0 ? '今天摸鱼' : `${cell.count} 次活跃`
@@ -393,6 +357,19 @@ function heatmapLevel(count: number): string {
   if (count < max * 0.35) return 'level-1'
   if (count < max * 0.7) return 'level-2'
   return 'level-3'
+}
+
+function shuffleHeatmapCells(list: HeatmapCell[]): HeatmapCell[] {
+  const array = [...list]
+  for (let i = array.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1))
+    const current = array[i]
+    const swapTarget = array[j]
+    if (current === undefined || swapTarget === undefined) continue
+    array[i] = swapTarget
+    array[j] = current
+  }
+  return array
 }
 
 function formatDate(date: Date): string {
@@ -522,7 +499,7 @@ async function fetchBlogFeed() {
     }
     const parser = new DOMParser()
     const xml = parser.parseFromString(text, 'application/xml')
-    const items = Array.from(xml.querySelectorAll('item'))
+    const items = Array.from(xml.querySelectorAll('item')).slice(0, 30)
     const mapped: ActivityItem[] = items.map((item, index) => {
       const titleNode = item.querySelector('title')
       const linkNode = item.querySelector('link')
@@ -554,11 +531,6 @@ async function fetchBlogFeed() {
 onMounted(() => {
   void fetchGithubActivities()
   void fetchBlogFeed()
-  startPointerTrail()
-})
-
-onBeforeUnmount(() => {
-  stopPointerTrail()
 })
 </script>
 
@@ -568,20 +540,6 @@ onBeforeUnmount(() => {
       <div class="blob blob-main" />
       <div class="blob blob-accent" />
     </div>
-    <div class="cursor-trail" aria-hidden="true">
-      <span
-        v-for="(point, index) in pointerTrail"
-        :key="point.id"
-        class="trail-dot"
-        :style="{
-          left: `${point.x}px`,
-          top: `${point.y}px`,
-          opacity: pointerTrailOpacity(index),
-          transform: `translate(-50%, -50%) scale(${pointerTrailScale(index)})`
-        }"
-      />
-    </div>
-
     <header class="hero-header">
       <div class="identity">
         <div class="identity-avatar">
@@ -601,7 +559,7 @@ onBeforeUnmount(() => {
             <a href="https://blog.fengying.xin/message" target="_blank" rel="noreferrer">去留言</a>
           </p>
           <div class="identity-stats">
-            <span class="stat-chip">{{ activityCounterText }}</span>
+            <span class="stat-chip">{{ activityCounter }}</span>
             <span class="stat-chip">{{ links.length }} 个指路标</span>
           </div>
         </div>
@@ -787,19 +745,16 @@ onBeforeUnmount(() => {
       </article>
 
       <article class="heatmap-card">
-        <p class="section-counter">{{ activityCounterText }}</p>
+        <p class="section-counter">{{ activityCounter }}</p>
         <div class="section-header">
           <h2 class="section-title">贡献热力图</h2>
-          <p class="section-subtitle">过去 {{ TOTAL_WEEKS }} 使用代码体温，颜色告诉你忙没忙。</p>
+          <p class="section-subtitle">过去 {{ TOTAL_WEEKS }} 周使用代码体温，颜色告诉你忙没忙。</p>
         </div>
         <div class="heatmap-body">
-          <div class="heatmap-axis heatmap-axis-y">
-            <span v-for="(label, index) in weekdayLabels" :key="`weekday-${index}`">{{ label }}</span>
-          </div>
-          <div class="heatmap-grid">
+          <div class="heatmap-grid" :style="heatmapGridStyle">
             <span
-              v-for="cell in heatmapCells"
-              :key="cell.date"
+              v-for="(cell, index) in heatmapCells"
+              :key="`${cell.date}-${index}`"
               class="heatmap-cell"
               :class="heatmapLevel(cell.count)"
               :title="describeHeatmapCell(cell)"
@@ -821,7 +776,7 @@ onBeforeUnmount(() => {
       </article>
 
       <article class="activity-card">
-        <p class="section-counter">{{ activityCounterText }}</p>
+        <p class="section-counter">{{ activityCounter }}</p>
         <div class="section-header">
           <h2 class="section-title">最近活动</h2>
           <p class="section-subtitle">GitHub + Blog 的活动记录呐，上下滑就能看到这一年的小冒泡。</p>
@@ -883,26 +838,6 @@ onBeforeUnmount(() => {
   inset: 0;
   pointer-events: none;
   overflow: hidden;
-}
-
-.cursor-trail {
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  z-index: 6;
-}
-
-.trail-dot {
-  position: absolute;
-  width: 14px;
-  height: 14px;
-  border-radius: 999px;
-  background: radial-gradient(circle, rgba(56, 189, 248, 0.85), rgba(56, 189, 248, 0));
-  box-shadow: 0 0 24px rgba(56, 189, 248, 0.35);
-  transform-origin: center;
-  will-change: transform, opacity;
-  transition: opacity 0.2s linear, transform 0.2s ease-out;
-  filter: blur(0.2px);
 }
 
 .blob {
@@ -1629,6 +1564,10 @@ onBeforeUnmount(() => {
 }
 
 .heatmap-card {
+  --heatmap-cell-size: 18px;
+  --heatmap-cell-gap: 3px;
+  --heatmap-columns: 20;
+  --heatmap-rows: 7;
   max-height: 540px;
 }
 
@@ -1644,39 +1583,36 @@ onBeforeUnmount(() => {
 }
 
 .heatmap-body {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 12px;
-  align-items: start;
-}
-
-.heatmap-axis {
-  display: grid;
-  grid-template-rows: repeat(7, 18px);
-  gap: 4px;
-  font-size: 11px;
-  color: var(--fg-muted);
-  text-align: right;
-  padding-top: 4px;
+  display: flex;
+  justify-content: flex-start;
+  max-width: 100%;
+  overflow-x: auto;
 }
 
 .heatmap-grid {
-  display: grid;
-  grid-auto-flow: column;
-  grid-auto-columns: minmax(0, 1fr);
-  grid-template-rows: repeat(7, minmax(12px, 1fr));
-  gap: 4px;
-  width: 100%;
-  min-height: 180px;
+  display: inline-grid;
+  grid-auto-flow: row;
+  grid-template-columns: repeat(var(--heatmap-columns), var(--heatmap-cell-size));
+  grid-template-rows: repeat(var(--heatmap-rows), var(--heatmap-cell-size));
+  gap: var(--heatmap-cell-gap);
+  width: auto;
+  margin: 0;
+  padding: calc(var(--heatmap-cell-size) / 2);
+  border: 1px solid rgba(148, 163, 184, 0.4);
+  border-radius: 18px;
+  background: rgba(2, 6, 23, 0.6);
+  box-shadow: inset 0 0 20px rgba(15, 23, 42, 0.5);
 }
 
 .heatmap-cell {
-  width: 100%;
-  aspect-ratio: 1 / 1;
-  border-radius: 4px;
+  width: var(--heatmap-cell-size);
+  height: var(--heatmap-cell-size);
+  border-radius: 3px;
   position: relative;
   background-color: rgba(15, 23, 42, 1);
   overflow: visible;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  box-sizing: border-box;
 }
 
 .heatmap-cell.level-0 {
@@ -1776,20 +1712,12 @@ onBeforeUnmount(() => {
   flex: 1 1 auto;
   min-height: 0;
   max-height: none;
-  margin: 0;
+  gap: 16px;
 }
 
 .activity-entry {
   text-decoration: none;
   color: inherit;
-}
-
-.activity-entry-meta {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  font-size: 12px;
-  color: var(--fg-secondary);
 }
 
 .activity-entry-source {
@@ -1800,17 +1728,6 @@ onBeforeUnmount(() => {
   font-size: 11px;
   letter-spacing: 0.18em;
   text-transform: uppercase;
-}
-
-.activity-entry-date {
-  font-size: 12px;
-  color: var(--fg-muted);
-  white-space: nowrap;
-}
-
-.activity-errors {
-  font-size: 12px;
-  color: #f97373;
 }
 
 .error-text {
@@ -1885,13 +1802,23 @@ onBeforeUnmount(() => {
     padding: 24px 18px 48px;
   }
 
+  .page-main {
+    grid-auto-rows: minmax(0, auto);
+    gap: 18px;
+  }
+
   .hero-card {
     min-height: auto;
+    border-radius: 24px;
   }
 
   .identity {
     flex-direction: column;
     align-items: flex-start;
+  }
+
+  .identity-name {
+    font-size: 24px;
   }
 
   .link-grid {
@@ -1919,6 +1846,35 @@ onBeforeUnmount(() => {
 
   .music-list {
     max-height: none;
+  }
+
+  .heatmap-card {
+    --heatmap-cell-size: 12px;
+    --heatmap-cell-gap: 2px;
+  }
+
+  .heatmap-body {
+    gap: 10px;
+    overflow-x: auto;
+  }
+
+  .heatmap-grid {
+    width: max(320px, 100%);
+    min-width: 320px;
+  }
+
+  .heatmap-cell {
+    border-radius: 2px;
+  }
+
+  .heatmap-legend {
+    font-size: 11px;
+    gap: 8px;
+  }
+
+  .legend-swatch {
+    width: 16px;
+    height: 8px;
   }
 
 }
