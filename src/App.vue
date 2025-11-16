@@ -1829,6 +1829,13 @@ onBeforeUnmount(() => {
 .activity-entry {
   text-decoration: none;
   color: inherit;
+  transition: border-color 120ms ease, transform 120ms ease, box-shadow 120ms ease;
+}
+
+.activity-entry:hover {
+  border-color: rgba(148, 163, 184, 0.9);
+  transform: translateY(-2px);
+  box-shadow: 0 18px 38px rgba(2, 6, 23, 0.85);
 }
 
 .activity-entry-source {
