@@ -1,5 +1,5 @@
 ﻿<script setup lang="ts">
-import { computed, nextTick, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 
 interface LinkItem {
   id: string
@@ -22,6 +22,13 @@ interface ActivityItem {
 interface HeatmapCell {
   date: string
   count: number
+}
+
+interface PointerTrailPoint {
+  id: number
+  x: number
+  y: number
+  createdAt: number
 }
 
 interface MusicTrack {
@@ -181,11 +188,18 @@ const githubLoading = ref(false)
 const blogLoading = ref(false)
 const githubError = ref<string | null>(null)
 const blogError = ref<string | null>(null)
+const pointerTrail = ref<PointerTrailPoint[]>([])
 const audioRef = ref<HTMLAudioElement | null>(null)
 const currentTrackIndex = ref(0)
 const trackProgress = ref(0)
 const trackDuration = ref(0)
 const isPlaying = ref(false)
+
+const MAX_TRAIL_POINTS = 14
+const TRAIL_LIFETIME_MS = 700
+let trailCleanupTimer: number | undefined
+let pointerTrailRaf: number | undefined
+let pendingPointer: { x: number; y: number } | null = null
 
 const currentTrack = computed<MusicTrack>(() => {
   if (!featuredTracks.length) return defaultTrack
@@ -285,6 +299,65 @@ function handleAudioPause() {
 
 function handleTrackEnded() {
   playNextTrack()
+}
+
+function prunePointerTrail(now = performance.now()) {
+  pointerTrail.value = pointerTrail.value.filter(
+    (point) => now - point.createdAt < TRAIL_LIFETIME_MS
+  )
+}
+
+function enqueuePointerTrailUpdate() {
+  if (pointerTrailRaf !== undefined) return
+  pointerTrailRaf = window.requestAnimationFrame(() => {
+    pointerTrailRaf = undefined
+    if (!pendingPointer) return
+    const { x, y } = pendingPointer
+    pendingPointer = null
+    const now = performance.now()
+    prunePointerTrail(now)
+    pointerTrail.value = [
+      ...pointerTrail.value,
+      { id: now, x, y, createdAt: now }
+    ].slice(-MAX_TRAIL_POINTS)
+  })
+}
+
+function handlePointerMove(event: PointerEvent) {
+  if (event.pointerType && event.pointerType !== 'mouse') return
+  pendingPointer = { x: event.clientX, y: event.clientY }
+  enqueuePointerTrailUpdate()
+}
+
+function startPointerTrail() {
+  window.addEventListener('pointermove', handlePointerMove, { passive: true })
+  trailCleanupTimer = window.setInterval(() => prunePointerTrail(), 80)
+}
+
+function stopPointerTrail() {
+  window.removeEventListener('pointermove', handlePointerMove)
+  if (trailCleanupTimer !== undefined) {
+    window.clearInterval(trailCleanupTimer)
+    trailCleanupTimer = undefined
+  }
+  if (pointerTrailRaf !== undefined) {
+    window.cancelAnimationFrame(pointerTrailRaf)
+    pointerTrailRaf = undefined
+  }
+  pendingPointer = null
+  pointerTrail.value = []
+}
+
+function pointerTrailOpacity(index: number): number {
+  const total = pointerTrail.value.length || 1
+  return (index + 1) / total
+}
+
+function pointerTrailScale(index: number): number {
+  const total = pointerTrail.value.length
+  if (total <= 1) return 1
+  const progress = index / (total - 1)
+  return 0.7 + progress * 0.4
 }
 
 const activityCounter = computed(() => {
@@ -531,6 +604,11 @@ async function fetchBlogFeed() {
 onMounted(() => {
   void fetchGithubActivities()
   void fetchBlogFeed()
+  startPointerTrail()
+})
+
+onBeforeUnmount(() => {
+  stopPointerTrail()
 })
 </script>
 
@@ -539,6 +617,19 @@ onMounted(() => {
     <div class="app-bg">
       <div class="blob blob-main" />
       <div class="blob blob-accent" />
+    </div>
+    <div class="cursor-trail" aria-hidden="true">
+      <span
+        v-for="(point, index) in pointerTrail"
+        :key="point.id"
+        class="trail-dot"
+        :style="{
+          left: `${point.x}px`,
+          top: `${point.y}px`,
+          opacity: pointerTrailOpacity(index),
+          transform: `translate(-50%, -50%) scale(${pointerTrailScale(index)})`
+        }"
+      />
     </div>
     <header class="hero-header">
       <div class="identity">
@@ -838,6 +929,26 @@ onMounted(() => {
   inset: 0;
   pointer-events: none;
   overflow: hidden;
+}
+
+.cursor-trail {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 6;
+}
+
+.trail-dot {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  background: radial-gradient(circle, rgba(56, 189, 248, 0.85), rgba(56, 189, 248, 0));
+  box-shadow: 0 0 24px rgba(56, 189, 248, 0.35);
+  transform-origin: center;
+  will-change: transform, opacity;
+  transition: opacity 0.2s linear, transform 0.2s ease-out;
+  filter: blur(0.2px);
 }
 
 .blob {
