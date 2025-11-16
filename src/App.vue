@@ -1974,11 +1974,12 @@ onBeforeUnmount(() => {
   .heatmap-body {
     gap: 10px;
     overflow-x: auto;
+    justify-content: center;
   }
 
   .heatmap-grid {
-    width: max(320px, 100%);
-    min-width: 320px;
+    width: fit-content;
+    min-width: 0;
   }
 
   .heatmap-cell {
