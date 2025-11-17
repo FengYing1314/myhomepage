@@ -119,6 +119,8 @@ const GITHUB_EVENTS_ENDPOINT =
   'https://api.github.com/users/FengYing1314/events/public?per_page=100'
 const BLOG_FEED_ENDPOINT = 'https://blog.fengying.xin/feed'
 const BLOG_FEED_FALLBACK = '/feed.rss'
+const VISITOR_ID_KEY = 'fy-visitor-id'
+const VISITOR_NUMBER_KEY = 'fy-visitor-number'
 const TOTAL_WEEKS = 5
 const SUB_CELLS_PER_DAY = 4
 const HEATMAP_ROWS = 7
@@ -194,6 +196,7 @@ const currentTrackIndex = ref(0)
 const trackProgress = ref(0)
 const trackDuration = ref(0)
 const isPlaying = ref(false)
+const visitorNumber = ref<number | null>(null)
 
 const MAX_TRAIL_POINTS = 14
 const TRAIL_LIFETIME_MS = 700
@@ -605,6 +608,63 @@ onMounted(() => {
   void fetchGithubActivities()
   void fetchBlogFeed()
   startPointerTrail()
+
+  if (typeof window === 'undefined') {
+    return
+  }
+
+  try {
+    let visitorId = window.localStorage.getItem(VISITOR_ID_KEY)
+
+    if (!visitorId || !visitorId.trim()) {
+      if ('crypto' in window && 'randomUUID' in window.crypto) {
+        visitorId = window.crypto.randomUUID()
+      } else {
+        visitorId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+      }
+      window.localStorage.setItem(VISITOR_ID_KEY, visitorId)
+    }
+
+    const idForRequest = visitorId
+
+    void fetch('/api/visitor', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ visitorId: idForRequest })
+    })
+      .then(async (response) => {
+        if (!response.ok) {
+          throw new Error('Visitor API error')
+        }
+
+        const data = (await response.json()) as { index?: number }
+        const index = typeof data.index === 'number' && data.index > 0 ? data.index : null
+
+        if (index !== null) {
+          visitorNumber.value = index
+          try {
+            window.localStorage.setItem(VISITOR_NUMBER_KEY, String(index))
+          } catch {
+            // ignore storage write errors
+          }
+        }
+      })
+      .catch(() => {
+        try {
+          const storedNumber = window.localStorage.getItem(VISITOR_NUMBER_KEY)
+          const parsed = storedNumber ? Number.parseInt(storedNumber, 10) : NaN
+          if (Number.isFinite(parsed) && parsed > 0) {
+            visitorNumber.value = parsed
+          }
+        } catch {
+          // ignore fallback errors
+        }
+      })
+  } catch {
+    // ignore storage errors
+  }
 })
 
 onBeforeUnmount(() => {
@@ -654,6 +714,11 @@ onBeforeUnmount(() => {
             <span class="stat-chip">{{ links.length }} 个指路标</span>
           </div>
         </div>
+      </div>
+      <div v-if="visitorNumber" class="visitor-badge">
+        <span class="visitor-label">你是第</span>
+        <span class="visitor-number">{{ visitorNumber }}</span>
+        <span class="visitor-label">位来访的小伙伴</span>
       </div>
     </header>
 
@@ -978,6 +1043,27 @@ onBeforeUnmount(() => {
   position: relative;
   z-index: 1;
   margin-bottom: 28px;
+}
+
+.visitor-badge {
+  position: absolute;
+  top: 0;
+  right: 0;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.88);
+  color: var(--fg-primary);
+  font-size: 12px;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  box-shadow: 0 8px 30px rgba(15, 23, 42, 0.65);
+  backdrop-filter: blur(8px);
+}
+
+.visitor-number {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
 }
 
 .identity {

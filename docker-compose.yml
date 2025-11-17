@@ -5,3 +5,5 @@ services:
     ports:
       - "555:555"
     restart: unless-stopped
+    volumes:
+      - ./visitor-data:/data

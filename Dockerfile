@@ -1,30 +1,41 @@
-# 构建阶段
+﻿# Build stage
 FROM node:24-alpine AS builder
 
 WORKDIR /app
 
-# 复制 package 文件
+# Copy package files
 COPY package*.json ./
 
-# 安装依赖
+# Install dependencies
 RUN npm ci
 
-# 复制源代码
+# Copy source code
 COPY . .
 
-# 构建项目
+# Build project
 RUN npm run build
 
-# 生产阶段
+# Production stage
 FROM nginx:alpine
 
-# 从构建阶段复制构建产物
+WORKDIR /app
+
+# Install Node.js to run visitor counter API
+RUN apk add --no-cache nodejs
+
+# Copy built assets from builder stage
 COPY --from=builder /app/dist /usr/share/nginx/html
 
-# 复制 nginx 配置
+# Copy nginx config
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 
-# 暴露 555 端口
+# Copy visitor counter API source
+COPY server ./server
+
+ENV VISITOR_PORT=7000
+ENV VISITOR_DATA_DIR=/data
+
+# Expose HTTP port
 EXPOSE 555
 
-CMD ["nginx", "-g", "daemon off;"]
+CMD ["sh", "-c", "node /app/server/visitor-api.js & nginx -g 'daemon off;'"]
