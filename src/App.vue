@@ -116,7 +116,9 @@ const defaultTrack: MusicTrack = {
 }
 
 const GITHUB_EVENTS_ENDPOINT =
-  'https://api.github.com/users/FengYing1314/events/public?per_page=100'
+  import.meta.env.PROD
+    ? '/api/github-events'
+    : 'https://api.github.com/users/FengYing1314/events/public?per_page=100'
 const BLOG_FEED_ENDPOINT = 'https://blog.fengying.xin/feed'
 const BLOG_FEED_FALLBACK = '/feed.rss'
 const VISITOR_ID_KEY = 'fy-visitor-id'

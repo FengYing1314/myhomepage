@@ -7,3 +7,8 @@ services:
     restart: unless-stopped
     volumes:
       - ./visitor-data:/data
+    environment:
+      # 在部署环境中通过外部环境变量或 .env 文件提供 GITHUB_TOKEN
+      # 例如：GITHUB_TOKEN=ghp_xxx
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      GITHUB_USERNAME: FengYing1314

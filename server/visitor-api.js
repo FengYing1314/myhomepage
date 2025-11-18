@@ -1,11 +1,20 @@
 
 const http = require('http')
+const https = require('https')
 const fs = require('fs')
 const path = require('path')
 
 const PORT = Number.parseInt(process.env.VISITOR_PORT || '7000', 10) || 7000
 const DATA_DIR = process.env.VISITOR_DATA_DIR || path.join(__dirname, '..', 'data')
 const DATA_FILE = path.join(DATA_DIR, 'visitor-counter.json')
+
+const GITHUB_USERNAME = process.env.GITHUB_USERNAME || 'FengYing1314'
+const GITHUB_TOKEN = process.env.GITHUB_TOKEN || ''
+const GITHUB_EVENTS_PATH = `/users/${GITHUB_USERNAME}/events/public?per_page=100`
+const GITHUB_CACHE_TTL_MS = 5 * 60 * 1000
+
+let githubCache = null
+let githubCacheTimestamp = 0
 
 async function readState() {
   try {
@@ -74,9 +83,86 @@ function sendJson(res, statusCode, payload) {
     'Cache-Control': 'no-store',
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Headers': 'Content-Type',
-    'Access-Control-Allow-Methods': 'POST, OPTIONS'
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS'
   })
   res.end(body)
+}
+
+function requestGithubEventsFromApi() {
+  return new Promise((resolve, reject) => {
+    const headers = {
+      'User-Agent': 'myhomepage/1.0',
+      Accept: 'application/vnd.github+json'
+    }
+
+    if (GITHUB_TOKEN) {
+      headers.Authorization = `Bearer ${GITHUB_TOKEN}`
+    }
+
+    const options = {
+      hostname: 'api.github.com',
+      path: GITHUB_EVENTS_PATH,
+      method: 'GET',
+      headers
+    }
+
+    const req = https.request(options, (res) => {
+      const { statusCode } = res
+      const chunks = []
+
+      res.on('data', (chunk) => {
+        chunks.push(chunk)
+      })
+
+      res.on('end', () => {
+        const raw = Buffer.concat(chunks).toString('utf8')
+        if (!statusCode || statusCode < 200 || statusCode >= 300) {
+          const error = new Error(`GitHub API responded with status ${statusCode}`)
+          error.statusCode = statusCode
+          error.body = raw
+          reject(error)
+          return
+        }
+
+        try {
+          const parsed = JSON.parse(raw)
+          if (!Array.isArray(parsed)) {
+            reject(new Error('Unexpected GitHub API payload'))
+            return
+          }
+          resolve(parsed)
+        } catch (error) {
+          reject(error)
+        }
+      })
+    })
+
+    req.on('error', (error) => {
+      reject(error)
+    })
+
+    req.end()
+  })
+}
+
+async function fetchGithubEvents() {
+  const now = Date.now()
+
+  if (githubCache && now - githubCacheTimestamp < GITHUB_CACHE_TTL_MS) {
+    return githubCache
+  }
+
+  try {
+    const fresh = await requestGithubEventsFromApi()
+    githubCache = fresh
+    githubCacheTimestamp = now
+    return fresh
+  } catch (error) {
+    if (githubCache) {
+      return githubCache
+    }
+    throw error
+  }
 }
 
 const server = http.createServer(async (req, res) => {
@@ -128,6 +214,28 @@ const server = http.createServer(async (req, res) => {
       // eslint-disable-next-line no-console
       console.error('Visitor API error:', error)
       sendJson(res, 500, { error: 'Internal error' })
+    }
+    return
+  }
+
+  if (url.startsWith('/github/events')) {
+    if (method === 'OPTIONS') {
+      sendJson(res, 200, { ok: true })
+      return
+    }
+
+    if (method !== 'GET') {
+      sendJson(res, 405, { error: 'Method not allowed' })
+      return
+    }
+
+    try {
+      const events = await fetchGithubEvents()
+      sendJson(res, 200, events)
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      console.error('GitHub events error:', error)
+      sendJson(res, 502, { error: 'Failed to load GitHub events' })
     }
     return
   }
